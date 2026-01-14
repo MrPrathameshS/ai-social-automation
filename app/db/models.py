@@ -40,23 +40,24 @@ class BrandProfile(Base):
     __tablename__ = "brand_profiles"
 
     id = Column(Integer, primary_key=True, index=True)
-    brand_name = Column(String, nullable=False)
+    brand_name = Column(String(255), nullable=False)
+    client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
 
-    client_id = Column(Integer, ForeignKey("clients.id"), unique=True, nullable=False)
-    client = relationship("Client", back_populates="brand")
+    platform = Column(String(50), nullable=False)  # linkedin, instagram, facebook
+    page_id = Column(String(255), nullable=True)
 
-    tone_description = Column(Text)
-    audience_description = Column(Text)
-    writing_style = Column(Text)
-    do_not_use = Column(Text)
+    tone_description = Column(Text, nullable=True)
+    audience_description = Column(Text, nullable=True)
+    writing_style = Column(Text, nullable=True)
+    do_not_use = Column(Text, nullable=True)
+    learned_insights = Column(Text, nullable=True)
 
-    learned_insights = Column(Text, default="")
+    is_active = Column(Boolean, default=True)
+    approval_required = Column(Boolean, default=True)
+    voice_version = Column(String(50), default="v1")
 
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    topics = relationship("Topic", back_populates="brand", cascade="all, delete-orphan")
-    prompts = relationship("PromptTemplate", back_populates="brand", cascade="all, delete-orphan")
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
 
 # =========================
