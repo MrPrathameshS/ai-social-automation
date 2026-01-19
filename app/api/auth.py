@@ -81,11 +81,12 @@ def login(
     ).first()
 
     token = create_access_token({
-        "sub": user.email,
+        "sub": str(user.id),
         "client_id": user.client_id,
         "brand_id": brand.id if brand else None
     })
 
     return LoginResponse(access_token=token)
+
 
 

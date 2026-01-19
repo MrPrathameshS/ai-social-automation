@@ -1,12 +1,23 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from datetime import datetime, timezone
+from pydantic import BaseModel
 
 from app.db.session import get_db
-from app.db.models import Topic
+from app.db.models import Topic, ContentItem
 from app.api.deps import get_current_context
+from app.schemas.content import ContentGenerateRequest
 from app.services.ingestion_service import ingest_from_sheet
-from app.services.generation_pipeline import run_generation_pipeline
-from pydantic import BaseModel
+from app.services.content_generation_service import generate_content_for_topic
+
+from app.core.content_guards import assert_valid_transition
+from app.core.content_status import (
+    DRAFT,
+    PENDING_APPROVAL,
+    APPROVED,
+    PUBLISHED,
+    FAILED,
+)
 
 
 router = APIRouter(prefix="/content", tags=["content"])
@@ -23,6 +34,12 @@ class TopicCreateRequest(BaseModel):
 class IngestRequest(BaseModel):
     sheet_name: str
 
+class ContentEditRequest(BaseModel):
+    content_text: str
+
+
+class RejectRequest(BaseModel):
+    reason: str | None = None
 
 # =========================
 # Endpoints
@@ -69,10 +86,172 @@ def ingest(
 
 @router.post("/generate")
 def generate_for_my_brand(
+    payload: ContentGenerateRequest,
+    db: Session = Depends(get_db),
     ctx: dict = Depends(get_current_context)
 ):
-    """
-    Brand-isolated generation trigger.
-    """
-    run_generation_pipeline(ctx["brand_id"])
-    return {"status": "generation_started", "brand_id": ctx["brand_id"]}
+    result = generate_content_for_topic(
+        db=db,
+        topic_id=payload.topic_id,
+        platform=payload.platform,
+        category_id=payload.category_id
+    )
+
+    return result
+
+@router.post("/{content_id}/submit")
+def submit_for_approval(
+    content_id: int,
+    db: Session = Depends(get_db),
+    ctx: dict = Depends(get_current_context),
+):
+    brand_id = ctx["brand_id"]
+
+    content = db.query(ContentItem).filter(
+        ContentItem.id == content_id,
+        ContentItem.brand_id == brand_id
+    ).first()
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    assert_valid_transition(content.status, PENDING_APPROVAL)
+
+    content.status = PENDING_APPROVAL
+    db.commit()
+
+    return {"status": "submitted", "content_id": content.id}
+
+@router.post("/{content_id}/approve")
+def approve_content(
+    content_id: int,
+    db: Session = Depends(get_db),
+    ctx: dict = Depends(get_current_context),
+):
+    brand_id = ctx["brand_id"]
+
+    content = db.query(ContentItem).filter(
+        ContentItem.id == content_id,
+        ContentItem.brand_id == brand_id
+    ).first()
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    # ✅ Guard: only PENDING_APPROVAL → APPROVED
+    assert_valid_transition(content.status, APPROVED)
+
+    content.status = APPROVED
+    content.approved_at = datetime.now(timezone.utc)
+
+    db.commit()
+
+    return {"status": "approved", "content_id": content.id}
+
+@router.post("/{content_id}/reject")
+def reject_content(
+    content_id: int,
+    payload: RejectRequest,
+    db: Session = Depends(get_db),
+    ctx: dict = Depends(get_current_context),
+):
+    brand_id = ctx["brand_id"]
+
+    content = db.query(ContentItem).filter(
+        ContentItem.id == content_id,
+        ContentItem.brand_id == brand_id
+    ).first()
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    assert_valid_transition(content.status, DRAFT)
+
+    content.status = DRAFT
+    db.commit()
+
+    return {"status": "rejected", "content_id": content.id}
+
+@router.patch("/{content_id}")
+def edit_content(
+    content_id: int,
+    payload: ContentEditRequest,
+    db: Session = Depends(get_db),
+    ctx: dict = Depends(get_current_context),
+):
+    brand_id = ctx["brand_id"]
+
+    content = db.query(ContentItem).filter(
+        ContentItem.id == content_id,
+        ContentItem.brand_id == brand_id
+    ).first()
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    # Editing is allowed in DRAFT or APPROVED
+    if content.status == APPROVED:
+        assert_valid_transition(APPROVED, DRAFT)
+        content.status = DRAFT
+
+    elif content.status != DRAFT:
+        raise HTTPException(
+            status_code=400,
+            detail="Content can only be edited in DRAFT or APPROVED state"
+        )
+
+
+    content.content_text = payload.content_text
+    db.commit()
+
+
+    return {"status": "updated", "content_id": content.id}
+
+@router.post("/{content_id}/publish")
+def publish_content(
+    content_id: int,
+    db: Session = Depends(get_db),
+    ctx: dict = Depends(get_current_context),
+):
+    brand_id = ctx["brand_id"]
+
+    content = db.query(ContentItem).filter(
+        ContentItem.id == content_id,
+        ContentItem.brand_id == brand_id
+    ).first()
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    # 🔒 Guard: only APPROVED → PUBLISHED
+    assert_valid_transition(content.status, PUBLISHED)
+
+    try:
+        # 🔜 STEP 2A (stub for now)
+        # Later: call LinkedIn publisher here
+        # publish_to_linkedin(content)
+
+        content.status = PUBLISHED
+        content.published_at = datetime.now(timezone.utc)
+        content.publish_error = None
+
+        db.commit()
+
+        return {
+            "status": "published",
+            "content_id": content.id,
+            "published_at": content.published_at,
+        }
+
+    except Exception as e:
+        content.status = FAILED
+        content.publish_error = str(e)
+        db.commit()
+
+        raise HTTPException(
+            status_code=500,
+            detail="Publishing failed"
+        )
+
+
+

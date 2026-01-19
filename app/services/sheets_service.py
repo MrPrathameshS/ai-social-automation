@@ -2,7 +2,8 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 from app.db.session import SessionLocal
-from app.db.models import Topic, GeneratedContent
+from app.db.models import Topic, ContentItem
+
 from app.services.ai_generator import generate_content
 
 

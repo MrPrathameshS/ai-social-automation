@@ -1,19 +1,26 @@
-from fastapi import APIRouter
-from app.db.session import SessionLocal
-from app.db.models import GeneratedContent
+from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.db.models import ContentItem
 
 router = APIRouter()
 
+
 @router.post("/approve/{content_id}")
-def approve_content(content_id: int):
-    db = SessionLocal()
-    content = db.query(GeneratedContent).filter(GeneratedContent.id == content_id).first()
+def approve_content(content_id: int, db: Session = Depends(get_db)):
+    content = db.query(ContentItem).filter(ContentItem.id == content_id).first()
 
     if not content:
-        return {"error": "Content not found"}
+        raise HTTPException(status_code=404, detail="Content not found")
 
-    content.status = "approved"
+    content.status = "APPROVED"
     db.commit()
-    db.close()
+    db.refresh(content)
 
-    return {"status": "approved", "content_id": content_id}
+    return {
+        "status": "approved",
+        "content_id": content.id,
+        "platform": content.platform,
+        "content_type": content.content_type
+    }

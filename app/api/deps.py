@@ -1,28 +1,28 @@
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from jose import JWTError
 import jwt
 from app.core.config import settings
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+security = HTTPBearer()
 
-
-def get_current_context(token: str = Depends(oauth2_scheme)):
+def get_current_context(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
+        token = credentials.credentials
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=["HS256"])
 
-        email = payload.get("sub")
+        user_email = payload.get("sub")
         client_id = payload.get("client_id")
         brand_id = payload.get("brand_id")
 
-        if not email or not client_id or not brand_id:
+        if not user_email or not client_id or not brand_id:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Invalid token payload"
             )
 
         return {
-            "email": email,
+            "email": user_email,
             "client_id": client_id,
             "brand_id": brand_id
         }

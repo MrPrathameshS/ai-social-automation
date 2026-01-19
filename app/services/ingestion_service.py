@@ -1,7 +1,7 @@
 from app.db.models import Topic, ContentItem
 from app.db.session import SessionLocal
 from app.services.sheets_service import get_sheet_data
-
+from app.core.content_status import DRAFT
 
 def ingest_from_sheet(sheet_name: str):
     db = SessionLocal()
@@ -21,12 +21,15 @@ def ingest_from_sheet(sheet_name: str):
 
         # Create Content Items per platform
         for platform in platforms:
+            from app.core.content_status import DRAFT
+
             item = ContentItem(
                 topic_id=topic.id,
                 platform=platform.strip(),
                 content_type=content_type,
-                status="PENDING_APPROVAL"
+                status=DRAFT
             )
+
             db.add(item)
 
         db.commit()
