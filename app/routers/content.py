@@ -10,6 +10,7 @@ from app.schemas.content import ContentGenerateRequest
 from app.services.ingestion_service import ingest_from_sheet
 from app.services.content_generation_service import generate_content_for_topic
 
+
 from app.core.content_guards import assert_valid_transition
 from app.core.content_status import (
     DRAFT,
@@ -18,9 +19,13 @@ from app.core.content_status import (
     PUBLISHED,
     FAILED,
 )
+from app.services.publishers.linkedin_api import (
+    publish_to_linkedin,
+    LinkedInPublishError,
+)
 
 
-router = APIRouter(prefix="/content", tags=["content"])
+router = APIRouter(tags=["content"])
 
 
 # =========================
@@ -90,6 +95,8 @@ def generate_for_my_brand(
     db: Session = Depends(get_db),
     ctx: dict = Depends(get_current_context)
 ):
+    print("DEBUG payload.platform:", payload.platform, type(payload.platform))
+
     result = generate_content_for_topic(
         db=db,
         topic_id=payload.topic_id,
@@ -105,6 +112,8 @@ def submit_for_approval(
     db: Session = Depends(get_db),
     ctx: dict = Depends(get_current_context),
 ):
+    print("CTX brand_id:", ctx["brand_id"])
+
     brand_id = ctx["brand_id"]
 
     content = db.query(ContentItem).filter(
@@ -207,6 +216,11 @@ def edit_content(
 
     return {"status": "updated", "content_id": content.id}
 
+from app.services.publishers.linkedin_api import (
+    publish_to_linkedin,
+    LinkedInPublishError,
+)
+
 @router.post("/{content_id}/publish")
 def publish_content(
     content_id: int,
@@ -226,13 +240,21 @@ def publish_content(
     # 🔒 Guard: only APPROVED → PUBLISHED
     assert_valid_transition(content.status, PUBLISHED)
 
-    try:
-        # 🔜 STEP 2A (stub for now)
-        # Later: call LinkedIn publisher here
-        # publish_to_linkedin(content)
+    # 🔒 Idempotency guard (very important)
+    if content.linkedin_post_urn:
+        raise HTTPException(
+            status_code=400,
+            detail="Content already published to LinkedIn"
+        )
 
+    try:
+        # ✅ Call real LinkedIn publisher
+        result = publish_to_linkedin(content)
+
+        # ✅ Persist success
         content.status = PUBLISHED
         content.published_at = datetime.now(timezone.utc)
+        content.linkedin_post_urn = result["external_post_id"]
         content.publish_error = None
 
         db.commit()
@@ -241,17 +263,114 @@ def publish_content(
             "status": "published",
             "content_id": content.id,
             "published_at": content.published_at,
+            "linkedin_post_urn": content.linkedin_post_urn,
+            "linkedin_url": result["url"],
         }
 
+    except LinkedInPublishError as e:
+        # 🔴 Platform failure (recoverable)
+        content.status = FAILED
+        content.publish_error = str(e)
+        db.commit()
+
+        raise HTTPException(
+            status_code=502,
+            detail=f"LinkedIn publishing failed: {str(e)}"
+        )
+
     except Exception as e:
+        # 🔴 Unexpected failure
         content.status = FAILED
         content.publish_error = str(e)
         db.commit()
 
         raise HTTPException(
             status_code=500,
-            detail="Publishing failed"
+            detail="Unexpected publishing error"
         )
 
+
+@router.post("/{content_id}/publish-now")
+def publish_now(
+    content_id: int,
+    db: Session = Depends(get_db),
+    ctx: dict = Depends(get_current_context),
+):
+    brand_id = ctx["brand_id"]
+
+    content = (
+        db.query(ContentItem)
+        .filter(
+            ContentItem.id == content_id,
+            ContentItem.brand_id == brand_id,
+        )
+        .first()
+    )
+
+    if not content:
+        raise HTTPException(status_code=404, detail="Content not found")
+
+    # 🔒 Guard: only APPROVED content
+    assert_valid_transition(content.status, PUBLISHED)
+
+    brand = content.brand
+
+    if not brand.is_active:
+        raise HTTPException(
+            status_code=400,
+            detail="Brand is inactive (auth failure or disabled)",
+        )
+
+    if not brand.linkedin_access_token or not brand.linkedin_author_urn:
+        raise HTTPException(
+            status_code=400,
+            detail="Missing LinkedIn credentials",
+        )
+
+    router = PublisherRouter()
+    now = datetime.now(timezone.utc)
+
+    try:
+        result = router.publish(
+            content=content,
+            access_token=brand.linkedin_access_token,
+            author_urn=brand.linkedin_author_urn,
+        )
+
+        content.status = PUBLISHED
+        content.published_at = now
+        content.linkedin_post_urn = result["external_post_id"]
+        content.publish_error = None
+
+        db.commit()
+
+        return {
+            "status": "published",
+            "content_id": content.id,
+            "linkedin_post_urn": content.linkedin_post_urn,
+            "published_at": content.published_at,
+        }
+
+    except PublishError as e:
+        content.publish_error = str(e)
+
+        if e.error_type == PublishErrorType.AUTH:
+            content.status = FAILED
+            brand.is_active = False
+
+        elif e.retryable:
+            content.status = FAILED
+            content.retry_count += 1
+            content.last_retry_at = now
+
+        else:
+            content.status = FAILED
+
+        db.commit()
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"Publish failed: {str(e)}",
+        )
 
 

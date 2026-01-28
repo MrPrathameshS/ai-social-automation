@@ -1,14 +1,18 @@
 import os
-import jwt
 import hashlib
 import bcrypt
 from datetime import datetime, timedelta
 from typing import Optional
 
+from jose import jwt  # ✅ IMPORTANT (python-jose)
+
 # =====================
 # CONFIG
 # =====================
-SECRET_KEY = os.getenv("SECRET_KEY", "supersecret")  # move to .env later
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError("SECRET_KEY not set in environment")
+
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 day
 
@@ -18,20 +22,13 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 day
 # =====================
 
 def _prehash_password(password: str) -> bytes:
-    """
-    Pre-hash with SHA256 to avoid bcrypt 72 byte limit.
-    Always returns bytes.
-    """
     return hashlib.sha256(password.encode("utf-8")).digest()
 
 
 def hash_password(password: str) -> str:
     prehashed = _prehash_password(password)
-
-    # bcrypt expects bytes, and will handle length safely now
     salt = bcrypt.gensalt()
     hashed = bcrypt.hashpw(prehashed, salt)
-
     return hashed.decode("utf-8")
 
 
@@ -44,9 +41,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 # JWT
 # =====================
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+def create_access_token(
+    data: dict,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
     to_encode = data.copy()
-    expire = datetime.utcnow() + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
+
+    expire = datetime.utcnow() + (
+        expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+
     to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+    encoded_jwt = jwt.encode(
+        to_encode,
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
     return encoded_jwt

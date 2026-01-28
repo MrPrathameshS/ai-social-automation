@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 
-from app.routers import content, approval, brands, brand_profiles, topics, brand_rules, auth
-from app.integrations.linkedin.routers import router as linkedin_router
+from app.routers import content, approval, brands, brand_profiles, topics, brand_rules
+from app.api import auth
 
+from app.integrations.linkedin.routers import router as linkedin_router
+from workers.scheduler import start_scheduler
 app = FastAPI(title="AI Social Automation System", debug=True)
 
 app.include_router(auth.router, tags=["auth"])   # 🔹 IMPORTANT
@@ -20,7 +22,7 @@ app.include_router(
 )
 
 
-app.include_router(linkedin_router, prefix="/linkedin", tags=["linkedin"])
+app.include_router(linkedin_router)
 
 
 @app.get("/")
@@ -40,3 +42,10 @@ def debug_routes():
         for route in app.routes
         if isinstance(route, APIRoute)
     ]
+
+from workers.scheduler import start_scheduler
+
+@app.on_event("startup")
+def startup_event():
+    print("🚀 App startup event triggered")
+    start_scheduler()

@@ -22,10 +22,14 @@ class Settings:
     # Environment
     ENV: str = os.getenv("ENV", "development")
 
-    # 🔵 LinkedIn
+    # 🔵 LinkedIn OAuth (used only for auth flow)
     LINKEDIN_CLIENT_ID: str = os.getenv("LINKEDIN_CLIENT_ID")
     LINKEDIN_CLIENT_SECRET: str = os.getenv("LINKEDIN_CLIENT_SECRET")
     LINKEDIN_REDIRECT_URI: str = os.getenv("LINKEDIN_REDIRECT_URI")
+
+    # 🟢 LinkedIn Publishing (USED BY publish_to_linkedin)
+    LINKEDIN_ACCESS_TOKEN: str = os.getenv("LINKEDIN_ACCESS_TOKEN")
+    LINKEDIN_AUTHOR_URN: str = os.getenv("LINKEDIN_AUTHOR_URN")
 
 
 

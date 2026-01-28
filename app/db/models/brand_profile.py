@@ -15,6 +15,10 @@ class BrandProfile(Base):
     platform = Column(String(50), nullable=False)
     page_id = Column(String(255), nullable=True)
 
+    # 🔑 LinkedIn credentials (ADDED)
+    linkedin_access_token = Column(Text, nullable=True)
+    linkedin_author_urn = Column(String(255), nullable=True)
+
     tone_description = Column(Text, nullable=True)
     audience_description = Column(Text, nullable=True)
     writing_style = Column(Text, nullable=True)
@@ -52,14 +56,12 @@ class BrandProfile(Base):
         cascade="all, delete-orphan"
     )
 
-    # 🔹 Categories (Brand + System)
     categories = relationship(
         "Category",
         back_populates="brand",
         cascade="all, delete-orphan"
     )
 
-    # 🔹 Rules (THIS WAS MISSING – VERY IMPORTANT)
     rules = relationship(
         "BrandRule",
         back_populates="brand",

@@ -9,3 +9,5 @@ from app.db.models.prompt_template import PromptTemplate
 from app.db.models.posting_strategy import PostingStrategy
 from app.db.models.category import Category
 from app.db.models.brand_rule import BrandRule
+from .linkedin_post import LinkedInPost
+
