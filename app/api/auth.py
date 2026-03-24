@@ -98,9 +98,24 @@ def login(
             detail="Invalid credentials",
         )
 
-    token = create_access_token({
-        "sub": str(user.id)   # ✅ MUST be user.id
-    })
+    # 🔹 Fetch the user's brand
+    brand = (
+        db.query(BrandProfile)
+        .filter(BrandProfile.client_id == user.client_id)
+        .first()
+    )
 
+    if not brand:
+        raise HTTPException(
+            status_code=400,
+            detail="No brand configured for this client",
+        )
+
+    # 🔹 Create token with full context
+    token = create_access_token({
+        "sub": user.email,
+        "client_id": user.client_id,
+        "brand_id": brand.id
+    })
 
     return LoginResponse(access_token=token)

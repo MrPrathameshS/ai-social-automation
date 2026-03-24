@@ -1,13 +1,40 @@
+# --- Core Web Framework ---
 fastapi
 uvicorn
+
+# --- Database ---
 sqlalchemy
 psycopg2-binary
+
+# --- Data validation & env ---
 pydantic
 python-dotenv
+email-validator
+
+# --- Auth & Security ---
+python-jose[cryptography]
+PyJWT
+bcrypt
+passlib[bcrypt]
+
+# --- HTTP & OAuth ---
+requests
+urllib3
+certifi
+httpx
+
+# --- Google Sheets ---
 gspread
 oauth2client
+
+# --- AI / LLMs ---
 openai
 anthropic
+groq
+
+# --- Media ---
 moviepy
 pillow
+
+# --- Scheduling ---
 apscheduler

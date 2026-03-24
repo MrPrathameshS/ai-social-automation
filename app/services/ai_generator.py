@@ -8,10 +8,12 @@ client = Groq(api_key=settings.GROQ_API_KEY)
 
 
 def generate_content(
+    db,
     topic: str,
     brand_id: int,
     platform: str,
-    content_type: str = "post"
+    content_type: str = "post",
+    extra_context: str | None = None,
 ) -> str:
 
     prompt_record = get_latest_prompt_record(brand_id, platform)
@@ -22,6 +24,7 @@ def generate_content(
     brand_prompt = build_brand_prompt_layer(brand_id)
 
     rule_prompt = build_rule_prompt_layer(
+        db,
         brand_id=brand_id,
         platform=platform,
         category_id=None
@@ -46,10 +49,20 @@ CONTENT INSTRUCTION:
 Create a {content_type} for {platform}.
 
 Topic: {topic}
+""".strip()
+
+    if extra_context:
+        user_prompt += f"""
+
+Additional context:
+{extra_context}
+"""
+
+    user_prompt += """
 
 Write high-quality, original content tailored exactly for this platform and brand.
 Be specific, insightful, and engaging. Avoid generic phrasing.
-""".strip()
+"""
 
     print(f"🧠 Generating content for brand_id={brand_id}, topic='{topic}', platform={platform}")
 

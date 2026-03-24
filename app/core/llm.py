@@ -6,10 +6,6 @@ _cached_model: str | None = None
 
 
 def get_default_groq_model() -> str:
-    """
-    Dynamically select a currently supported Groq chat model.
-    Cached after first successful lookup.
-    """
     global _cached_model
 
     if _cached_model:
@@ -17,16 +13,12 @@ def get_default_groq_model() -> str:
 
     models = _client.models.list().data
 
-    # Prefer instruction/chat-style models
-    preferred_keywords = ["it", "instruct", "chat"]
-
     for model in models:
         name = model.id.lower()
-        if any(k in name for k in preferred_keywords):
+        if "chat" in name or "it" in name or "instruct" in name:
             _cached_model = model.id
             return _cached_model
 
-    # Absolute fallback
     _cached_model = models[0].id
     return _cached_model
 
@@ -53,4 +45,7 @@ _llm_client = LLMClient()
 
 
 def call_llm(prompt: str, system_prompt: str = "You are a helpful AI assistant.") -> str:
-    return _llm_client.chat(system_prompt=system_prompt, user_prompt=prompt)
+    return _llm_client.chat(
+        system_prompt=system_prompt,
+        user_prompt=prompt
+    )

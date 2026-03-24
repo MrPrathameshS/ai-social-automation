@@ -19,6 +19,24 @@ class BrandProfile(Base):
     linkedin_access_token = Column(Text, nullable=True)
     linkedin_author_urn = Column(String(255), nullable=True)
 
+        # 🔐 LinkedIn token lifecycle (NEW)
+    linkedin_connected_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+        server_default=func.now(),
+    )
+
+    linkedin_token_expires_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    linkedin_disconnected_at = Column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+
     tone_description = Column(Text, nullable=True)
     audience_description = Column(Text, nullable=True)
     writing_style = Column(Text, nullable=True)

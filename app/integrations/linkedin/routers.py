@@ -1,13 +1,13 @@
 print("🔥 linkedin router module loading")
 
-
+from sqlalchemy import text
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from urllib.parse import quote
 import secrets
 import os
-import requests
+
 from sqlalchemy import text
 
 from app.db.session import get_db
@@ -24,9 +24,11 @@ from app.schemas.linkedin_post import (
 
 from sqlalchemy import and_
 from datetime import datetime, date
+from app.services.linkedin.publisher import LinkedInPublisher
 
-
+import requests
 router = APIRouter(prefix="/linkedin", tags=["LinkedIn"])
+from datetime import datetime, timedelta, timezone
 
 LINKEDIN_CLIENT_ID = os.getenv("LINKEDIN_CLIENT_ID")
 LINKEDIN_CLIENT_SECRET = os.getenv("LINKEDIN_CLIENT_SECRET")
@@ -73,9 +75,11 @@ def linkedin_health_check():
 #    return RedirectResponse(auth_url)
 
 @router.get("/connect")
-def linkedin_connect(
-    brand: BrandProfile = Depends(get_current_brand),
-):
+def linkedin_connect(db: Session = Depends(get_db)):
+
+    # TEMP: pick the first brand for testing
+    brand = db.query(BrandProfile).first()
+
     state = f"{brand.id}:{secrets.token_urlsafe(16)}"
 
     auth_url = (
@@ -95,6 +99,8 @@ def linkedin_connect(
 # ---------------------------
 # OAuth Callback
 # ---------------------------
+
+
 @router.get("/callback")
 def linkedin_callback(
     code: str,
@@ -103,37 +109,37 @@ def linkedin_callback(
 ):
     print("🟠 CALLBACK")
     print("state received =", state)
+
+    # ---------------------------
+    # Debug / visibility (optional, safe)
+    # ---------------------------
     db_name = db.execute(text("SELECT current_database()")).scalar()
     print("🧠 BACKEND DB NAME =", db_name)
-    search_path = db.execute(text("SHOW search_path")).scalar()
-    print("🧠 BACKEND SEARCH_PATH =", search_path)
-    server_addr = db.execute(text("SELECT inet_server_addr(), inet_server_port()")).all()
-    print("🧠 BACKEND DB SERVER =", server_addr)
 
-    count = db.execute(text("SELECT COUNT(*) FROM brand_profiles")).scalar()
-    print("🧠 BACKEND BRAND COUNT =", count)
-
-
-
-    # 🔍 DEBUG DB VISIBILITY
     brands = db.execute(
         text("SELECT id, brand_name FROM brand_profiles")
     ).fetchall()
-
     print("🔥 BRANDS IN CALLBACK DB =", brands)
 
-    # ✅ Extract brand_id
+    # ---------------------------
+    # Extract brand_id from state
+    # ---------------------------
     try:
         brand_id = int(state.split(":")[0])
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid OAuth state")
 
-    # ✅ Fetch brand
-    brand = db.query(BrandProfile).filter(BrandProfile.id == brand_id).first()
+    brand = (
+        db.query(BrandProfile)
+        .filter(BrandProfile.id == brand_id)
+        .first()
+    )
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
-    # ✅ Exchange token
+    # ---------------------------
+    # Exchange authorization code → access token
+    # ---------------------------
     token_res = requests.post(
         "https://www.linkedin.com/oauth/v2/accessToken",
         data={
@@ -147,9 +153,14 @@ def linkedin_callback(
         timeout=15,
     )
     token_res.raise_for_status()
-    access_token = token_res.json()["access_token"]
+    token_data = token_res.json()
 
-    # ✅ OIDC userinfo (CORRECT)
+    access_token = token_data["access_token"]
+    expires_in = token_data.get("expires_in")  # seconds
+
+    # ---------------------------
+    # OIDC userinfo (MUST come BEFORE commit)
+    # ---------------------------
     userinfo_res = requests.get(
         "https://api.linkedin.com/v2/userinfo",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -167,14 +178,31 @@ def linkedin_callback(
 
     author_urn = f"urn:li:person:{person_id}"
 
-    # ✅ Save
+    # ---------------------------
+    # Persist OAuth state atomically
+    # ---------------------------
+    now = datetime.now(timezone.utc)
+
     brand.linkedin_access_token = access_token
     brand.linkedin_author_urn = author_urn
+
+    brand.linkedin_connected_at = now
+    brand.linkedin_disconnected_at = None
+
+    if expires_in:
+        brand.linkedin_token_expires_at = now + timedelta(seconds=expires_in)
+    else:
+        brand.linkedin_token_expires_at = None
+
     db.commit()
 
+    # ---------------------------
+    # Redirect back to frontend
+    # ---------------------------
     return RedirectResponse(
         url=f"{os.getenv('FRONTEND_URL')}/integrations/linkedin/success"
     )
+
 
 
 
@@ -188,88 +216,60 @@ class LinkedInPostRequest(BaseModel):
 from app.db.models.linkedin_post import LinkedInPost
 
 
+
+
 @router.post("/post")
 def post_to_linkedin(
     payload: LinkedInPostRequest,
     brand: BrandProfile = Depends(get_current_brand),
     db: Session = Depends(get_db),
 ):
+    # 🔒 PHASE 2: brand lifecycle guard
+    if brand.linkedin_disconnected_at:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "LINKEDIN_DISCONNECTED",
+                "message": "LinkedIn account disconnected. Reconnect required.",
+                "action": "reconnect",
+            },
+        )
+
+    # Existing credential guard (still valid)
     if not brand.linkedin_access_token or not brand.linkedin_author_urn:
-        raise HTTPException(status_code=400, detail="LinkedIn not connected")
+        raise HTTPException(
+            status_code=400,
+            detail="LinkedIn not connected"
+        )
 
-    ugc_payload = {
-        "author": brand.linkedin_author_urn,
-        "lifecycleState": "PUBLISHED",
-        "specificContent": {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {"text": payload.text},
-                "shareMediaCategory": "NONE",
-            }
-        },
-        "visibility": {
-            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
-        },
-    }
+    publisher = LinkedInPublisher(db)
 
-    res = requests.post(
-        "https://api.linkedin.com/v2/ugcPosts",
-        headers={
-            "Authorization": f"Bearer {brand.linkedin_access_token}",
-            "Content-Type": "application/json",
-            "X-Restli-Protocol-Version": "2.0.0",
-        },
-        json=ugc_payload,
-        timeout=15,
-    )
-
-    # 🔴 FAILURE PATH — NOW PERSISTED
-    if res.status_code >= 400:
-        # ✅ Persist failed post
-        failed_post = LinkedInPost(
-            brand_id=brand.id,
-            linkedin_post_urn="FAILED",
+    try:
+        post = publisher.publish_text_post(
+            brand=brand,
             text=payload.text,
-            status="failed",
-            error_message=res.text,
         )
 
-        db.add(failed_post)
-        db.commit()
-        db.refresh(failed_post)
+    except RuntimeError as e:
+        if "authorization expired" in str(e).lower():
+            raise HTTPException(
+                status_code=400,
+                detail="LinkedIn authorization expired. Reconnect LinkedIn.",
+            )
+        raise
 
+    if post.status == "failed":
         raise HTTPException(
-            status_code=res.status_code,
-            detail=res.text,
+            status_code=400,
+            detail=post.error_message
         )
-
-
-    # ✅ SUCCESS PATH
-    linkedin_post_urn = res.json().get("id")
-    if not linkedin_post_urn:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unexpected LinkedIn response: {res.json()}",
-        )
-
-    post = LinkedInPost(
-        brand_id=brand.id,
-        linkedin_post_urn=linkedin_post_urn,
-        text=payload.text,
-        status="published",
-    )
-
-    db.add(post)
-    db.commit()
-    db.refresh(post)
 
     return {
-        "status": "posted",
-        "linkedin_post_urn": linkedin_post_urn,
+        "status": post.status,
         "post_id": post.id,
+        "linkedin_post_urn": post.linkedin_post_urn,
+        "retry_count": post.retry_count,
     }
-
-
-
 
 
 @router.get(
@@ -336,13 +336,15 @@ def list_linkedin_posts(
         "offset": offset,
     }
 
+from datetime import datetime
+from app.services.linkedin.publisher import LinkedInPublisher
+
 @router.post("/posts/{post_id}/retry")
 def retry_linkedin_post(
     post_id: int,
     brand: BrandProfile = Depends(get_current_brand),
     db: Session = Depends(get_db),
 ):
-    # 1️⃣ Fetch post (brand-scoped)
     post = (
         db.query(LinkedInPost)
         .filter(
@@ -355,68 +357,40 @@ def retry_linkedin_post(
     if not post:
         raise HTTPException(status_code=404, detail="Post not found")
 
-    # 2️⃣ Only failed posts can be retried
-    if post.status != "failed":
+    # 🚫 Permanent failure guard
+    if post.status == "permanent_failure":
         raise HTTPException(
             status_code=400,
-            detail="Only failed posts can be retried",
+            detail="Post failed permanently. Reconnect LinkedIn to retry.",
         )
 
-    # 3️⃣ Ensure LinkedIn is connected
-    if not brand.linkedin_access_token or not brand.linkedin_author_urn:
-        raise HTTPException(status_code=400, detail="LinkedIn not connected")
+    # 🚫 Invalid state guard
+    if post.status not in ("failed",):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Post is in '{post.status}' state and cannot be retried",
+        )
 
-    # 4️⃣ Rebuild LinkedIn payload
-    ugc_payload = {
-        "author": brand.linkedin_author_urn,
-        "lifecycleState": "PUBLISHED",
-        "specificContent": {
-            "com.linkedin.ugc.ShareContent": {
-                "shareCommentary": {"text": post.text},
-                "shareMediaCategory": "NONE",
-            }
-        },
-        "visibility": {
-            "com.linkedin.ugc.MemberNetworkVisibility": "PUBLIC"
-        },
-    }
+    # ⏳ Backoff guard
+    if post.next_retry_at and post.next_retry_at > datetime.utcnow():
+        raise HTTPException(
+            status_code=429,
+            detail=f"Retry allowed after {post.next_retry_at.isoformat()}",
+        )
 
-    # 5️⃣ Retry publish
-    res = requests.post(
-        "https://api.linkedin.com/v2/ugcPosts",
-        headers={
-            "Authorization": f"Bearer {brand.linkedin_access_token}",
-            "Content-Type": "application/json",
-            "X-Restli-Protocol-Version": "2.0.0",
-        },
-        json=ugc_payload,
-        timeout=15,
+    publisher = LinkedInPublisher(db)
+
+    post = publisher.publish_text_post(
+        brand=brand,
+        text=post.text,
+        existing_post=post,
     )
 
-    if res.status_code >= 400:
-        # 🔴 Still failed — update error
-        post.error_message = res.text
-        db.commit()
-
-        raise HTTPException(status_code=res.status_code, detail=res.text)
-
-    # 6️⃣ Success — update existing record
-    linkedin_post_urn = res.json().get("id")
-    if not linkedin_post_urn:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Unexpected LinkedIn response: {res.json()}",
-        )
-
-    post.linkedin_post_urn = linkedin_post_urn
-    post.status = "published"
-    post.error_message = None
-
-    db.commit()
-    db.refresh(post)
-
     return {
-        "status": "retried",
+        "status": post.status,
         "post_id": post.id,
-        "linkedin_post_urn": linkedin_post_urn,
+        "retry_count": post.retry_count,
+        "next_retry_at": post.next_retry_at,
     }
+
+
